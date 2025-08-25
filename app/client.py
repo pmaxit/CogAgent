@@ -2,6 +2,10 @@
 This script creates an OpenAI Request demo for the CogAgent model.
 All parameters are now controlled by arguments, allowing you to run the script
 with a single line of code specifying all needed parameters.
+
+Note: This version captures screenshots of only the left half of the screen
+to focus the agent's attention on a specific area. Event calibration has been
+adjusted accordingly to map coordinates from the half-screen to full screen coordinates.
 """
 
 import argparse
@@ -93,7 +97,7 @@ def identify_os() -> str:
     Identifies the operating system based on the platform information.
 
     Returns:
-    - str: "Mac" if the system is macOS, "WIN" if the system is Windows.
+    - str: "Mac" if the system is macOS, "WIN" if the system is Windows, "Linux" if the system is Linux.
 
     Raises:
     - ValueError: If the operating system is not supported.
@@ -102,10 +106,12 @@ def identify_os() -> str:
     #TODO: Need check if windows platform can run the demo.
 
     os_detail = platform.platform().lower()
-    if "mac" in os_detail:
+    if "mac" in os_detail or "darwin" in os_detail:
         return "Mac"
     elif "windows" in os_detail:
         return "WIN"
+    elif "linux" in os_detail:
+        return "Linux"
     else:
         raise ValueError(
             f"This {os_detail} operating system is not currently supported!"
@@ -131,7 +137,7 @@ def formatting_input(
     - ValueError: If the lengths of `history_step` and `history_action` do not match.
     """
     current_platform = identify_os()
-    platform_str = f"(Platform: {current_platform})\n"
+    platform_str = f"(Platform: {current_platform}, Screenshot: Left half of screen)\n"
     format_str = "(Answer in Status-Plan-Action-Operation-Sensitive format.)\n"
 
     if len(history_step) != len(history_action):
@@ -166,12 +172,17 @@ def formatting_input(
 
 def shot_current_screen(round_num: int):
     """
-    Captures a screenshot of the current screen and saves it to the cache directory.
+    Captures a screenshot of the left half of the current screen and saves it to the cache directory.
 
     Parameters:
     - round_num (int): The current round number for naming the image file.
     """
-    img = pyautogui.screenshot()
+    # Get screen size
+    screen_width, screen_height = pyautogui.size()
+    
+    # Capture only the left half of the screen (from x=0 to x=screen_width/2)
+    left_half_width = screen_width // 2
+    img = pyautogui.screenshot(region=(0, 0, left_half_width, screen_height))
     img.save(f"caches/img_{round_num}.png")
 
 

@@ -39,10 +39,12 @@ META_PARAMETER = {
 
 def identify_os():
     os_detail = platform.platform()
-    if "mac" in os_detail.lower():
+    if "mac" in os_detail.lower() or "darwin" in os_detail.lower():
         return "Mac"
     elif "windows" in os_detail.lower():
         return "Win"
+    elif "linux" in os_detail.lower():
+        return "Linux"
     else:
         raise ValueError(
             f"This {os_detail} operating system is not currently supported!"
@@ -52,10 +54,11 @@ def identify_os():
 def paste(text):
     pyperclip.copy(text)
     time.sleep(1)
-    if identify_os() == "Mac":
+    os_type = identify_os()
+    if os_type == "Mac":
         with pyautogui.hold("command"):
             pyautogui.press("v")
-    elif identify_os() == "Win":
+    elif os_type == "Win" or os_type == "Linux":
         with pyautogui.hold("ctrl"):
             pyautogui.press("v")
 
@@ -65,7 +68,7 @@ def click(params):
     Meta-operation: CLICK
     CLICK: Simulate a left-click at the center position of the box.
     """
-    pyautogui.doubleClick(params["box"])
+    pyautogui.click(params["box"])
 
 
 def double_click(params):
@@ -132,15 +135,40 @@ def end(params):
 
 
 def launch(params):
-    system_app_dir = "/System/Applications"  # For Mac
-    applications_dir = "/Applications"  # For Mac
-    applications = [app for app in os.listdir(applications_dir) if app.endswith(".app")]
-    system_apps = [app for app in os.listdir(system_app_dir) if app.endswith(".app")]
-    all_apps = applications + system_apps
-    for app in all_apps:
-        if params["app"][1:-1] in app:
-            app_dir = applications_dir + "/" + app
-            os.system(f"open -a '{app_dir}'")
+    os_type = identify_os()
+    app_name = params["app"][1:-1] if len(params["app"]) > 2 else params["app"]
+    
+    if os_type == "Mac":
+        system_app_dir = "/System/Applications"
+        applications_dir = "/Applications"
+        if os.path.exists(applications_dir):
+            applications = [app for app in os.listdir(applications_dir) if app.endswith(".app")]
+        else:
+            applications = []
+        if os.path.exists(system_app_dir):
+            system_apps = [app for app in os.listdir(system_app_dir) if app.endswith(".app")]
+        else:
+            system_apps = []
+        all_apps = applications + system_apps
+        for app in all_apps:
+            if app_name in app:
+                app_dir = applications_dir + "/" + app if app in applications else system_app_dir + "/" + app
+                os.system(f"open -a '{app_dir}'")
+                break
+    elif os_type == "Linux":
+        # Try common Linux application launch methods
+        # First try to launch directly
+        if os.system(f"which {app_name.lower()} > /dev/null 2>&1") == 0:
+            os.system(f"{app_name.lower()} &")
+        # Try with xdg-open for desktop files
+        elif os.path.exists(f"/usr/share/applications/{app_name.lower()}.desktop"):
+            os.system(f"xdg-open /usr/share/applications/{app_name.lower()}.desktop &")
+        # Try gtk-launch
+        else:
+            os.system(f"gtk-launch {app_name.lower()} 2>/dev/null || xdg-open {app_name.lower()} 2>/dev/null &")
+    elif os_type == "Win":
+        # Windows application launch
+        os.system(f"start {app_name}")
 
 META_OPERATION = {
     # Defining meta-operation functions
@@ -191,15 +219,18 @@ def convert_to_meta_operation(Grounded_Operation):
         detailed_operation["meta"] = Grounded_Operation["operation"]
         for value in META_PARAMETER[Grounded_Operation["operation"]]:
             if value in Grounded_Operation:
+                # Note: Screenshot captures only left half of screen, so x coordinates are adjusted accordingly
                 if value == "box":
                     # number = (left, top, width, height)
                     numbers = Grounded_Operation["box"]
                     box = [num / 1000 for num in numbers]
                     # box = (left/1000, top/1000, width/1000, height/1000)
-                    width, height = pyautogui.size()
-                    # x_min, y_min, x_max, y_max = left, top, right, down)
+                    screen_width, screen_height = pyautogui.size()
+                    # Since screenshot is only left half of screen, adjust x coordinates
+                    # x coordinates in screenshot are relative to left half (0 to 0.5 of full screen)
+                    # y coordinates remain the same (0 to 1 of full screen)
                     x_min, y_min, x_max, y_max = [
-                        int(coord * width) if i % 2 == 0 else int(coord * height)
+                        int(coord * screen_width // 2) if i % 2 == 0 else int(coord * screen_height)
                         for i, coord in enumerate(box)
                     ]
                     x, y = (x_min + x_max) / 2, (y_min + y_max) / 2

@@ -303,8 +303,7 @@ def load_model(model_dir: str):
         trust_remote_code=True,
         gpu_memory_utilization=0.9,
         enforce_eager=True,
-        worker_use_ray=True,
-        disable_log_requests=True,
+        hf_overrides={"architectures": ["GLM4VForCausalLM"]},
         # 如果遇见 OOM 现象，建议开启下述参数
         # enable_chunked_prefill=True,
         # max_num_batched_tokens=8192
