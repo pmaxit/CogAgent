@@ -350,6 +350,7 @@ def generate_stream_cogagent(model: AutoModel, tokenizer: AutoTokenizer, params:
         "top_k": 1,
         "streamer": streamer,
         "use_cache": True,
+        "pad_token_id": getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None),
     }
     if temperature > 1e-5:
         gen_kwargs["temperature"] = temperature
@@ -363,20 +364,12 @@ def generate_stream_cogagent(model: AutoModel, tokenizer: AutoTokenizer, params:
     generation_thread = threading.Thread(target=generate_text)
     generation_thread.start()
 
-    total_len = input_echo_len
     for next_text in streamer:
         generated_text += next_text
-        total_len = len(tokenizer.encode(generated_text))
-        yield {
-            "text": generated_text,
-            "usage": {
-                "prompt_tokens": input_echo_len,
-                "completion_tokens": total_len - input_echo_len,
-                "total_tokens": total_len,
-            },
-        }
+        yield {"text": generated_text}
 
     generation_thread.join()
+    total_len = len(tokenizer.encode(generated_text))
     yield {
         "text": generated_text,
         "usage": {
@@ -419,6 +412,9 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path, trust_remote_code=True, encode_special_tokens=True
     )
+    # Ensure pad token is set to EOS to avoid unnecessary padding overhead
+    if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+        tokenizer.pad_token = tokenizer.eos_token
     # Load model with attention implementation and multi-GPU device map
     try:
         model = AutoModel.from_pretrained(
@@ -453,6 +449,8 @@ if __name__ == "__main__":
     try:
         if hasattr(model, "config"):
             model.config.use_cache = True
+            if getattr(model.config, "pad_token_id", None) is None and getattr(tokenizer, "pad_token_id", None) is not None:
+                model.config.pad_token_id = tokenizer.pad_token_id
     except Exception:
         pass
 

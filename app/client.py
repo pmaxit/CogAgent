@@ -144,8 +144,10 @@ def formatting_input(
     if len(history_step) != len(history_action):
         raise ValueError("Mismatch in lengths of history_step and history_action.")
 
+    # Limit history to the last 5 items to reduce prompt/prefill latency
     history_str = "\nHistory steps: "
-    for index, (step, action) in enumerate(zip(history_step, history_action)):
+    limited_history = list(zip(history_step, history_action))[-5:]
+    for index, (step, action) in enumerate(limited_history):
         history_str += f"\n{index}. {step}\t{action}"
 
     query = f"Task: {task}{history_str}\n{platform_str}{format_str}"
