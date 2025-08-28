@@ -257,9 +257,17 @@ async def vllm_gen(
         ):
     # Use vllm to perform inference. 
     # For details on the meaning of the inputs and params_dict, see vLLM
+    # Ensure multimodal placeholder tokens exist in prompt when an image is provided
+    if image is not None:
+        prompt_text = f"<image>\n{messages}"
+        image_payload = [image] if not isinstance(image, list) else image
+    else:
+        prompt_text = messages
+        image_payload = None
+
     inputs = {
-        "prompt": messages,
-        "multi_modal_data": {"image": image},
+        "prompt": prompt_text,
+        "multi_modal_data": {"image": image_payload} if image_payload is not None else None,
     }
     params_dict = {
         "n": 1,
