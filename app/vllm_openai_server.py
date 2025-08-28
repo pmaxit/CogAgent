@@ -270,7 +270,8 @@ async def vllm_gen(
         "top_p": 0.8,
         "top_k": -1,
         "ignore_eos": False,
-        "max_tokens": 8192,
+        # Reduce default max tokens for lower latency; allow client to override
+        "max_tokens": 1024,
         "logprobs": None,
         "prompt_logprobs": None,
         "skip_special_tokens": True,
@@ -298,15 +299,20 @@ async def vllm_gen(
 def load_model(model_dir: str):
     engine_args = AsyncEngineArgs(
         model=model_dir,
-        tensor_parallel_size=1,
+        # Let vLLM use all visible GPUs automatically for tensor-parallel speedup
+        tensor_parallel_size=0,
         dtype="bfloat16",
         trust_remote_code=True,
-        gpu_memory_utilization=0.9,
-        enforce_eager=True,
+        # Increase memory utilization to reduce paging and speed up KV cache
+        gpu_memory_utilization=0.95,
+        # Disable eager to allow CUDA graphs and fused kernels where possible
+        enforce_eager=False,
+        # Enable chunked prefill to reduce long-context prefill latency
+        enable_chunked_prefill=True,
+        max_num_batched_tokens=8192,
+        # Enable prefix caching to reuse KV for repeated prompts
+        enable_prefix_caching=True,
         hf_overrides={"architectures": ["GLM4VForCausalLM"]},
-        # 如果遇见 OOM 现象，建议开启下述参数
-        # enable_chunked_prefill=True,
-        # max_num_batched_tokens=8192
     )
     engine = AsyncLLMEngine.from_engine_args(engine_args)
     return engine
