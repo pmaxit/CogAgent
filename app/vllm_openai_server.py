@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from vllm import SamplingParams, AsyncEngineArgs, AsyncLLMEngine
+from transformers import AutoTokenizer
 from PIL import Image
 from io import BytesIO
 
@@ -142,6 +143,41 @@ class ChatCompletionResponse(BaseModel):
     ]
     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
     usage: Optional[UsageInfo] = None
+hf_tokenizer = None
+
+
+def _detect_image_placeholder_token() -> str:
+    """Detect the model-specific image placeholder token from tokenizer.
+    Falls back to <|image_pad|> then <image> if not found.
+    """
+    try:
+        if hf_tokenizer is not None:
+            # Prefer tokens that obviously reference image placeholders
+            candidates = []
+            try:
+                candidates.extend(getattr(hf_tokenizer, "all_special_tokens", []) or [])
+            except Exception:
+                pass
+            try:
+                stm = getattr(hf_tokenizer, "special_tokens_map_extended", None)
+                if isinstance(stm, dict):
+                    for v in stm.values():
+                        if isinstance(v, list):
+                            candidates.extend(v)
+                        elif isinstance(v, str):
+                            candidates.append(v)
+            except Exception:
+                pass
+
+            for tok in candidates:
+                if isinstance(tok, str) and "image" in tok.lower():
+                    return tok
+    except Exception:
+        pass
+
+    # Sensible default fallback
+    return "<image>"
+
 
 
 @app.get("/v1/models", response_model=ModelList)
@@ -176,8 +212,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
     )
 
     response = None
-    messages = gen_params["messages"]
-    query, image = process_history_and_images(messages)
+    messages_list = gen_params["messages"]
+    query, image = process_history_and_images(messages_list)
 
     async for response in vllm_gen(model, query, image):
         pass
@@ -257,13 +293,32 @@ async def vllm_gen(
         ):
     # Use vllm to perform inference. 
     # For details on the meaning of the inputs and params_dict, see vLLM
-    # Ensure multimodal placeholder tokens exist in prompt when an image is provided
+    # Construct prompt and image payload
+    image_payload = None
+    single_image = None
     if image is not None:
-        prompt_text = f"<|image_pad|>\n{messages}"
-        image_payload = [image] if not isinstance(image, list) else image
+        single_image = image if isinstance(image, Image.Image) else (image[0] if isinstance(image, list) and image else None)
+
+    if single_image is not None:
+        # Prefer tokenizer's chat template if it can embed multimodal placeholders
+        prompt_text = None
+        try:
+            if hf_tokenizer is not None:
+                prompt_text = hf_tokenizer.apply_chat_template(
+                    [{"role": "user", "image": single_image, "content": messages}],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+        except Exception:
+            prompt_text = None
+
+        if not prompt_text:
+            # Fallback: use detected placeholder token
+            placeholder = _detect_image_placeholder_token()
+            prompt_text = f"{placeholder}\n{messages}"
+        image_payload = [single_image]
     else:
         prompt_text = messages
-        image_payload = None
 
     inputs = {
         "prompt": prompt_text,
@@ -272,9 +327,11 @@ async def vllm_gen(
 
     # Log prompt to verify multimodal token presence
     try:
-        has_token = "<|image_pad|>" in (prompt_text or "")
+        placeholder = _detect_image_placeholder_token()
+        has_token = (placeholder in (prompt_text or "")) or ("<image>" in (prompt_text or "")) or ("<|image_pad|>" in (prompt_text or ""))
         preview = (prompt_text or "")[:400]
-        print(f"[vLLM] Prompt contains <|image_pad|>: {has_token}")
+        print(f"[vLLM] Using image placeholder token: {placeholder}")
+        print(f"[vLLM] Prompt contains placeholder: {has_token}")
         print(f"[vLLM] Prompt preview (first 400 chars): {preview}")
     except Exception:
         pass
@@ -358,6 +415,12 @@ if __name__ == "__main__":
         "--port", type=int, default=8000, help="Port to run the server on"
     )
     args = parser.parse_args()
+
+    # Initialize tokenizer for chat template usage when building prompts
+    try:
+        hf_tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    except Exception:
+        hf_tokenizer = None
 
     # Load model
     model = load_model(args.model_path)
