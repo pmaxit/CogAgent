@@ -259,7 +259,7 @@ async def vllm_gen(
     # For details on the meaning of the inputs and params_dict, see vLLM
     # Ensure multimodal placeholder tokens exist in prompt when an image is provided
     if image is not None:
-        prompt_text = f"<image>\n{messages}"
+        prompt_text = f"<|image_pad|>\n{messages}"
         image_payload = [image] if not isinstance(image, list) else image
     else:
         prompt_text = messages
@@ -269,6 +269,15 @@ async def vllm_gen(
         "prompt": prompt_text,
         "multi_modal_data": {"image": image_payload} if image_payload is not None else None,
     }
+
+    # Log prompt to verify multimodal token presence
+    try:
+        has_token = "<|image_pad|>" in (prompt_text or "")
+        preview = (prompt_text or "")[:400]
+        print(f"[vLLM] Prompt contains <|image_pad|>: {has_token}")
+        print(f"[vLLM] Prompt preview (first 400 chars): {preview}")
+    except Exception:
+        pass
     params_dict = {
         "n": 1,
         "best_of": 1,
