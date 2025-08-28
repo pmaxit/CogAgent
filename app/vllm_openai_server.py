@@ -297,24 +297,33 @@ async def vllm_gen(
 
 
 def load_model(model_dir: str):
+    # Choose a sensible tensor-parallel size based on available GPUs
+    # vLLM expects tensor_parallel_size >= 1
+    try:
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        num_gpus = 0
+    tp_size = max(1, num_gpus)
+
     engine_args = AsyncEngineArgs(
         model=model_dir,
-        # Let vLLM use all visible GPUs automatically for tensor-parallel speedup
-        tensor_parallel_size=0,
+        tensor_parallel_size=tp_size,
         dtype="bfloat16",
         trust_remote_code=True,
-        # Increase memory utilization to reduce paging and speed up KV cache
         gpu_memory_utilization=0.95,
-        # Disable eager to allow CUDA graphs and fused kernels where possible
         enforce_eager=False,
-        # Enable chunked prefill to reduce long-context prefill latency
         enable_chunked_prefill=True,
         max_num_batched_tokens=8192,
-        # Enable prefix caching to reuse KV for repeated prompts
         enable_prefix_caching=True,
         hf_overrides={"architectures": ["GLM4VForCausalLM"]},
     )
-    engine = AsyncLLMEngine.from_engine_args(engine_args)
+
+    try:
+        engine = AsyncLLMEngine.from_engine_args(engine_args)
+    except Exception:
+        # Fallback to single-GPU TP if automatic choice is incompatible
+        engine_args.tensor_parallel_size = 1
+        engine = AsyncLLMEngine.from_engine_args(engine_args)
     return engine
 
 
