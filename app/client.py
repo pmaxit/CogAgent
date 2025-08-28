@@ -16,6 +16,7 @@ import re
 import os
 import gradio as gr
 import threading
+import time
 from PIL import Image, ImageDraw
 from typing import List, Dict, Any, Optional, Tuple
 from functools import partial
@@ -329,6 +330,9 @@ def workflow(
     history_action = []
     history = chatbot
     round_num = 1
+    total_start_time = time.time()
+    total_model_infer_s = 0.0
+    total_action_exec_s = 0.0
     task = chatbot[-1][0] if chatbot and chatbot[-1] else "No task provided"
 
     try:
@@ -344,6 +348,7 @@ def workflow(
             messages = formatting_input(task, history_step, history_action, round_num)
 
             # Call the chatbot API to get a response
+            model_infer_start = time.time()
             response = create_chat_completion(
                 api_key=api_key,
                 base_url=base_url,
@@ -354,6 +359,8 @@ def workflow(
                 temperature=temperature,
                 stream=False,
             )
+            model_infer_time = time.time() - model_infer_start
+            total_model_infer_s += model_infer_time
 
             # Extract grounded operations and actions from the response
             step, action = extract_grounded_operation(response)
@@ -368,15 +375,30 @@ def workflow(
                 break
 
             # Execute the grounded operation using the agent
+            action_exec_start = time.time()
             status = agent(grounded_operation)
+            action_exec_time = time.time() - action_exec_start
+            total_action_exec_s += action_exec_time
 
             # Update the history with the latest response
             history.append([f"Round {round_num}", response])
 
             # Prepare the output image path
             output_image = f"caches/img_{round_num}_bbox.png"
+            # Log per-round timings
+            round_total_time = model_infer_time + action_exec_time
+            print(
+                f"[Timing] Round {round_num}: model_infer={model_infer_time:.3f}s, "
+                f"action_exec={action_exec_time:.3f}s, total={round_total_time:.3f}s"
+            )
+
             if status == "END" or stop_event.is_set():
                 output_image = f"caches/img_{round_num - 1}_bbox.png"
+                total_elapsed = time.time() - total_start_time
+                print(
+                    f"[Timing] Totals: model_infer={total_model_infer_s:.3f}s, "
+                    f"action_exec={total_action_exec_s:.3f}s, total_elapsed={total_elapsed:.3f}s"
+                )
                 yield history, output_image
                 break
             else:
@@ -386,6 +408,14 @@ def workflow(
     finally:
         # Clear the stop event at the end of the workflow
         stop_event.clear()
+        try:
+            total_elapsed = time.time() - total_start_time
+            print(
+                f"[Timing] Totals: model_infer={total_model_infer_s:.3f}s, "
+                f"action_exec={total_action_exec_s:.3f}s, total_elapsed={total_elapsed:.3f}s"
+            )
+        except Exception:
+            pass
 
 
 def switch():

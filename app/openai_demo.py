@@ -32,6 +32,15 @@ TORCH_TYPE = (
     else torch.float16
 )
 
+# Enable TF32 for faster matmul on Ampere+ GPUs when available
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -319,18 +328,28 @@ def generate_stream_cogagent(model: AutoModel, tokenizer: AutoTokenizer, params:
         tokenize=True,
         return_tensors="pt",
         return_dict=True,
-    ).to(model.device)
+    )
+
+    # Ensure inputs are on a valid device for sharded/multi-GPU models
+    target_device = getattr(model, "device", None)
+    if target_device is None or str(target_device) == "meta":
+        try:
+            target_device = next(model.parameters()).device
+        except StopIteration:
+            target_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model_inputs = model_inputs.to(target_device)
 
     input_echo_len = len(model_inputs["input_ids"][0])
     streamer = TextIteratorStreamer(
         tokenizer=tokenizer, timeout=60.0, skip_prompt=True, skip_special_tokens=True
     )
     gen_kwargs = {
-        "max_length": max_new_tokens,
+        "max_new_tokens": max_new_tokens,
         "do_sample": True if temperature > 1e-5 else False,
         "top_p": top_p if temperature > 1e-5 else 0,
         "top_k": 1,
         "streamer": streamer,
+        "use_cache": True,
     }
     if temperature > 1e-5:
         gen_kwargs["temperature"] = temperature
@@ -382,6 +401,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to run the server on"
     )
+    parser.add_argument(
+        "--attn_impl",
+        default="flash_attention_2",
+        help="Attention implementation: flash_attention_2, sdpa, or eager",
+    )
+    parser.add_argument(
+        "--device_map",
+        default="auto",
+        help="Device map for model sharding: auto, balanced, sequential, etc.",
+    )
     args = parser.parse_args()
 
     model_dir = Path(args.model_path).expanduser().resolve()
@@ -390,13 +419,42 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path, trust_remote_code=True, encode_special_tokens=True
     )
-    # Load model
-    model = AutoModel.from_pretrained(
-        args.model_path,
-        torch_dtype=TORCH_TYPE,
-        trust_remote_code=True,
-        device_map="auto",
-    ).eval()
+    # Load model with attention implementation and multi-GPU device map
+    try:
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=TORCH_TYPE,
+            trust_remote_code=True,
+            device_map=args.device_map,
+            attn_implementation=args.attn_impl,
+        ).eval()
+    except TypeError:
+        # Older transformers may not accept attn_implementation kwarg
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=TORCH_TYPE,
+            trust_remote_code=True,
+            device_map=args.device_map,
+        ).eval()
+    except Exception as e:
+        # Fallback to SDPA if flash attention is unavailable
+        try:
+            model = AutoModel.from_pretrained(
+                args.model_path,
+                torch_dtype=TORCH_TYPE,
+                trust_remote_code=True,
+                device_map=args.device_map,
+                attn_implementation="sdpa",
+            ).eval()
+        except Exception:
+            raise e
+
+    # Ensure cache is enabled for faster generation
+    try:
+        if hasattr(model, "config"):
+            model.config.use_cache = True
+    except Exception:
+        pass
 
     # Run the Uvicorn server with the specified host and port
     uvicorn.run(app, host=args.host, port=args.port, workers=1)
